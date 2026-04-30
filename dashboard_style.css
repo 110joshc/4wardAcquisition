@@ -1,0 +1,332 @@
+/* ============================================================
+   dashboard_style.css  —  Dark analytics theme
+   Hard-coded hex values so Bootstrap cannot override them
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Fraunces:ital,wght@0,300;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+/* ── Hard reset every background to dark ── */
+html,
+body,
+.dashboard-page-wrapper,
+.dashboard-container,
+.flexfill,
+.flexfill.ring,
+.tab-content,
+.tab-pane,
+.row,
+.container,
+.container-fluid,
+[class*="col-"],
+.section,
+.section.sidebar,
+.well,
+.panel,
+.panel-body,
+.panel-default,
+.panel-heading {
+  background-color: #0d1117 !important;
+  color: #e6edf3 !important;
+}
+
+/* ── Navbar ── */
+.navbar,
+.navbar-default,
+.navbar-default .navbar-header,
+.navbar-default .navbar-collapse {
+  background: linear-gradient(135deg, #0d1117 0%, #161b22 60%, #1a2236 100%) !important;
+  border-bottom: 1px solid #30363d !important;
+  box-shadow: none !important;
+}
+.navbar-brand {
+  font-family: 'Fraunces', Georgia, serif !important;
+  font-size: 1.25rem !important;
+  font-weight: 600 !important;
+  letter-spacing: -.02em !important;
+  color: #e6edf3 !important;
+}
+.navbar-default .navbar-nav > li > a {
+  color: #8b949e !important;
+  font-family: 'DM Mono', monospace !important;
+  font-size: .75rem !important;
+}
+.navbar-default .navbar-nav > li > a:hover {
+  color: #e6edf3 !important;
+  background: rgba(255,255,255,.07) !important;
+}
+.navbar-default .navbar-nav > li.active > a,
+.navbar-default .navbar-nav > li.active > a:focus,
+.navbar-default .navbar-nav > li.active > a:hover {
+  color: #0d1117 !important;
+  background: #58a6ff !important;
+}
+
+/* ── Chart boxes ── */
+.chart-wrapper {
+  background: #161b22 !important;
+  border: 1px solid #30363d !important;
+  border-radius: 10px !important;
+  margin: 6px !important;
+  box-shadow: 0 2px 12px rgba(0,0,0,.35) !important;
+}
+.chart-wrapper:hover { border-color: #3d4451 !important; }
+.chart-stage,
+.chart-shim {
+  background: #161b22 !important;
+}
+.chart-title {
+  font-family: 'Fraunces', Georgia, serif !important;
+  font-size: 1rem !important;
+  font-weight: 600 !important;
+  color: #e6edf3 !important;
+  background: #161b22 !important;
+  border-bottom: 1px solid #30363d !important;
+  padding: .55rem 1rem !important;
+}
+
+/* ── Sidebar ── */
+.section.sidebar .chart-wrapper,
+.section.sidebar .chart-stage,
+.section.sidebar .chart-shim {
+  background: #0d1117 !important;
+  border-color: #30363d !important;
+}
+
+/* ── Value boxes ── */
+.value-box {
+  background: #1c2330 !important;
+  border: 1px solid #30363d !important;
+  border-radius: 10px !important;
+  margin: 6px !important;
+}
+.value-box .value {
+  font-family: 'Fraunces', Georgia, serif !important;
+  font-size: 1.75rem !important;
+  font-weight: 600 !important;
+  color: #e6edf3 !important;
+}
+.value-box .caption {
+  font-family: 'DM Mono', monospace !important;
+  font-size: .7rem !important;
+  text-transform: uppercase !important;
+  letter-spacing: .08em !important;
+  color: #8b949e !important;
+}
+.value-box .icon-large { color: rgba(255,255,255,.08) !important; }
+
+/* ── Tables ── */
+.table {
+  color: #e6edf3 !important;
+  background: transparent !important;
+  font-family: 'DM Sans', sans-serif !important;
+}
+.table thead th {
+  background: #161b22 !important;
+  color: #8b949e !important;
+  font-family: 'DM Mono', monospace !important;
+  font-size: .72rem !important;
+  text-transform: uppercase !important;
+  letter-spacing: .1em !important;
+  border-bottom: 2px solid #30363d !important;
+}
+.table tbody tr { border-bottom: 1px solid #30363d !important; }
+.table-striped tbody tr:nth-of-type(odd) { background: rgba(255,255,255,.02) !important; }
+.table-hover tbody tr:hover { background: #1c2330 !important; }
+.table td, .table th { border-color: #30363d !important; padding: .65rem 1rem !important; }
+
+/* ── Page intro banner ── */
+.page-intro {
+  background: #1c2330;
+  border: 1px solid #30363d;
+  border-left: 3px solid #58a6ff;
+  border-radius: 8px;
+  padding: .85rem 1.4rem;
+  font-size: .92rem;
+  color: #c9d1d9;
+  line-height: 1.6;
+}
+.page-intro strong { color: #e6edf3; }
+
+/* ── Interpretation cards ── */
+.interp-card {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  background: #1c2330;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 1rem 1.4rem;
+  height: 100%;
+  font-size: .88rem;
+  line-height: 1.75;
+  color: #c9d1d9;
+}
+.interp-icon { font-size: 1.6rem; line-height: 1; margin-top: .1rem; flex-shrink: 0; }
+.interp-card p { margin: 0; }
+.interp-card strong { color: #e6edf3; }
+.interp-card code {
+  font-family: 'DM Mono', monospace;
+  font-size: .8rem;
+  background: rgba(88,166,255,.1);
+  color: #58a6ff;
+  padding: .1rem .35rem;
+  border-radius: 4px;
+}
+
+/* ── About card ── */
+.about-card {
+  display: flex;
+  gap: 1.5rem;
+  padding: .5rem 0;
+  height: 100%;
+}
+.about-col {
+  flex: 1;
+  background: #1c2330;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 1.1rem 1.4rem;
+  font-size: .88rem;
+  line-height: 1.75;
+  color: #c9d1d9;
+}
+.about-label {
+  font-family: 'DM Mono', monospace;
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: #58a6ff;
+  margin-bottom: .5rem;
+}
+.about-col p { margin: 0; }
+.about-col strong { color: #e6edf3; }
+.about-col code {
+  font-family: 'DM Mono', monospace;
+  font-size: .8rem;
+  background: rgba(88,166,255,.1);
+  color: #58a6ff;
+  padding: .1rem .35rem;
+  border-radius: 4px;
+}
+
+/* ── Formula card ── */
+.formula-card {
+  padding: 1.2rem 1.4rem;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.formula-label {
+  font-family: 'DM Mono', monospace;
+  font-size: .65rem;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: #8b949e;
+  margin-bottom: .35rem;
+}
+.formula-response {
+  font-family: 'Fraunces', Georgia, serif;
+  font-size: 1.8rem;
+  font-weight: 600;
+  color: #58a6ff;
+  letter-spacing: -.02em;
+  line-height: 1;
+}
+.formula-terms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  margin-top: .3rem;
+}
+.term-badge {
+  background: rgba(88,166,255,.1);
+  color: #58a6ff;
+  border: 1px solid rgba(88,166,255,.25);
+  border-radius: 5px;
+  padding: .2rem .55rem;
+  font-family: 'DM Mono', monospace;
+  font-size: .72rem;
+  white-space: nowrap;
+}
+.formula-meta {
+  display: flex;
+  gap: 1.5rem;
+  margin-top: auto;
+  padding-top: 1rem;
+  font-family: 'DM Mono', monospace;
+  font-size: .73rem;
+  color: #8b949e;
+  border-top: 1px solid #30363d;
+}
+.formula-meta strong { color: #e6edf3; }
+
+/* ── Sidebar stats ── */
+.sidebar-stats {
+  padding: .5rem .2rem;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+}
+.stat-block {
+  background: #1c2330;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: .75rem 1rem;
+}
+.stat-label {
+  font-family: 'DM Mono', monospace;
+  font-size: .65rem;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: #8b949e;
+  margin-bottom: .25rem;
+}
+.stat-value {
+  font-family: 'Fraunces', Georgia, serif;
+  font-size: 1.6rem;
+  font-weight: 600;
+  line-height: 1.1;
+  color: #e6edf3;
+}
+.stat-sub { font-size: .72rem; color: #8b949e; margin-top: .2rem; }
+.stat-divider { height: 1px; background: #30363d; margin: .4rem 0; }
+.accent-blue   { color: #58a6ff !important; }
+.accent-green  { color: #3fb950 !important; }
+.accent-purple { color: #d2a8ff !important; }
+.accent-gold   { color: #e3b341 !important; }
+
+/* ── Download button ── */
+.navbar-default .navbar-nav > li > a[href^="javascript:download"] {
+  color: #0d1117 !important;
+  background: #3fb950 !important;
+  border-radius: 6px !important;
+  padding: .35rem 1rem !important;
+  font-weight: 500 !important;
+  margin-right: .5rem !important;
+}
+.navbar-default .navbar-nav > li > a[href^="javascript:download"]:hover {
+  opacity: .85 !important;
+}
+
+/* ── Tab nav ── */
+.nav-tabs { border-bottom: 1px solid #30363d !important; }
+.nav-tabs > li > a {
+  font-family: 'DM Mono', monospace !important;
+  font-size: .75rem !important;
+  color: #8b949e !important;
+  background: transparent !important;
+  border-color: transparent !important;
+}
+.nav-tabs > li > a:hover { color: #e6edf3 !important; background: #1c2330 !important; }
+.nav-tabs > li.active > a,
+.nav-tabs > li.active > a:focus,
+.nav-tabs > li.active > a:hover {
+  color: #0d1117 !important;
+  background: #58a6ff !important;
+  border-color: #58a6ff !important;
+}
+
+/* ── Scrollbars ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0d1117; }
+::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }

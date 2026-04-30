@@ -1,0 +1,476 @@
+---
+title: "Stepwise Salary Visualizations"
+author: "4ward Acquisition"
+date: "2026-04-16"
+output:
+  flexdashboard::flex_dashboard:
+    vertical_layout: scroll
+    theme: bootstrap
+    css: dashboard_style.css
+    navbar:
+      - { title: "Josh Collins", align: right }
+      - { title: "April 2026",   align: right }
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(knitr)
+library(tidyverse)
+library(olsrr)
+library(faraway)
+library(leaps)
+library(GGally)
+library(glmnet)
+library(quantreg)
+library(kableExtra)
+library(modelr)
+library(htmltools)
+library(scales)
+
+knitr::opts_chunk$set(
+  echo    = FALSE,
+  comment = NA,
+  message = FALSE,
+  warning = FALSE,
+  fig.retina = 2
+)
+
+dark_theme <- theme_minimal(base_size = 13) +
+  theme(
+    plot.background   = element_rect(fill = "#161b22", color = NA),
+    panel.background  = element_rect(fill = "#161b22", color = NA),
+    panel.grid.major  = element_line(color = "#1c2330"),
+    panel.grid.minor  = element_blank(),
+    plot.title        = element_text(color = "#e6edf3", face = "bold", size = 14),
+    plot.subtitle     = element_text(color = "#8b949e", size = 11),
+    axis.text         = element_text(color = "#8b949e"),
+    axis.title        = element_text(color = "#8b949e"),
+    legend.background = element_rect(fill = "#161b22", color = NA),
+    legend.text       = element_text(color = "#8b949e"),
+    legend.title      = element_text(color = "#8b949e"),
+    strip.text        = element_text(color = "#8b949e"),
+    plot.margin       = margin(16, 20, 16, 20)
+  )
+```
+
+```{r data-prep}
+combined <- read_csv("data/clean/combined.csv")
+
+combined_clean <- combined %>%
+  filter(!is.na(SALARY), !is.na(AGY), !is.na(EDLVL), !is.na(LOS)) %>%
+  droplevels()
+
+combined_clean$SALARY <- combined_clean$SALARY / 1000
+
+model_df <- combined_clean %>%
+  select(-GSEGRD, -WORKSCH, -WORKSTAT, -PP, -PPGRD, -TOA, -SALLVLT, -AGYSUBT, -AGYSUB) %>%
+  mutate(
+    LOC    = ifelse(grepl("^[0-9]+$", LOC), LOC, "57"),
+    LOC    = as.numeric(LOC),
+    EDLVL  = na_if(EDLVL, "**"),
+    EDLVL  = as.numeric(EDLVL),
+    LOSLVL = na_if(LOSLVL, "Z"),
+    LOSLVL = match(LOSLVL, c("A","B","C","D","E","F","G","H","I","J")),
+    AGELVL = match(AGELVL, c("B","C","D","E","F","G","H","I","J","K"))
+  ) %>%
+  na.omit() %>%
+  droplevels()
+
+bad_vars <- names(which(sapply(model_df, function(x) length(unique(x)) < 2)))
+model_df <- model_df %>% select(-all_of(bad_vars)) %>% droplevels()
+
+null_model   <- lm(SALARY ~ 1, data = model_df)
+upper_model  <- lm(SALARY ~ ., data = model_df)
+n            <- nrow(model_df)
+
+forward_bic  <- step(null_model, direction = "forward",
+                     scope = formula(upper_model), k = log(n), trace = 0)
+step_bic     <- step(null_model, direction = "both",
+                     scope = formula(upper_model), k = log(n), trace = 0)
+simple_model <- lm(SALARY ~ LOS + AGELVL + EDLVL, data = model_df)
+
+plot_df <- model_df %>%
+  add_predictions(step_bic, var = "pred") %>%
+  add_residuals(step_bic,   var = "resid")
+
+agency_levels <- levels(factor(plot_df$AGY))
+pal <- colorRampPalette(
+  c("#58a6ff","#3fb950","#f78166","#d2a8ff","#e3b341",
+    "#79c0ff","#56d364","#ffa657","#ff7b72","#b392f0")
+)(length(agency_levels))
+names(pal) <- agency_levels
+```
+
+
+```{r}
+com <- combined_clean %>%
+  lm(SALARY ~ LOS + + SUPERVIS + DATECODE + EDLVL + 
+    AGY + AGELVL + LOC)
+```
+
+<!-- ############################################################
+     PAGE 1 — MODEL SUMMARY  (columns layout: stats pinned left)
+     ############################################################ -->
+
+Model Summary {data-orientation=columns}
+=====================================
+
+Column {data-width=340 .sidebar}
+-------------------------------------
+
+### Model at a Glance
+
+```{r}
+terms <- attr(terms(step_bic), "term.labels")
+r2    <- round(summary(step_bic)$r.squared, 3)
+
+htmltools::HTML(paste0('
+  <div class="sidebar-stats">
+
+    <div class="stat-block">
+      <div class="stat-label">Observations</div>
+      <div class="stat-value accent-blue">', scales::comma(n), '</div>
+    </div>
+
+    <div class="stat-block">
+      <div class="stat-label">Selected Model</div>
+      <div class="stat-value" style="font-size:1.1rem">Bidirectional BIC</div>
+    </div>
+
+    <div class="stat-block">
+      <div class="stat-label">R-squared</div>
+      <div class="stat-value accent-green">', r2, '</div>
+      <div class="stat-sub">Model explains ', round(r2*100), '% of salary variance</div>
+    </div>
+
+    <div class="stat-block">
+      <div class="stat-label">BIC</div>
+      <div class="stat-value accent-purple">', scales::comma(round(BIC(step_bic),0)), '</div>
+    </div>
+
+    <div class="stat-block">
+      <div class="stat-label">AIC</div>
+      <div class="stat-value accent-gold">', scales::comma(round(AIC(step_bic),0)), '</div>
+    </div>
+
+    <div class="stat-divider"></div>
+
+    <div class="stat-label">Predictors (', length(terms), ')</div>
+    <div class="formula-terms" style="margin-top:.5rem">',
+      paste(sprintf('<span class="term-badge">%s</span>', terms), collapse=" "),
+    '</div>
+
+    <div class="stat-divider"></div>
+
+    <div class="stat-label" style="margin-bottom:.4rem">Selection method</div>
+    <div class="formula-meta" style="flex-direction:column;gap:.35rem;border:none;padding:0">
+      <span>Direction: <strong>both</strong></span>
+      <span>Penalty: <strong>k = log(n)</strong></span>
+      <span>Response: <strong>SALARY / 1000</strong></span>
+    </div>
+
+  </div>
+'))
+```
+
+Column {data-width=860}
+-------------------------------------
+
+### Model Comparison
+
+```{r}
+comparison_tbl <- tibble(
+  Model     = c("Forward BIC", "Bidirectional BIC", "Simple (LOS+AGE+ED)"),
+  Variables = c(length(attr(terms(forward_bic), "term.labels")),
+                length(attr(terms(step_bic),    "term.labels")),
+                3L),
+  BIC = c(BIC(forward_bic), BIC(step_bic), BIC(simple_model)),
+  AIC = c(AIC(forward_bic), AIC(step_bic), AIC(simple_model)),
+  R2  = c(summary(forward_bic)$r.squared,
+          summary(step_bic)$r.squared,
+          summary(simple_model)$r.squared)
+)
+best_row <- which.min(comparison_tbl$BIC)
+
+comparison_tbl %>%
+  mutate(BIC = scales::comma(round(BIC, 1)),
+         AIC = scales::comma(round(AIC, 1)),
+         R2  = round(R2, 4)) %>%
+  kbl(align = c("l","c","r","r","r"), escape = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped","hover"),
+                full_width = TRUE, font_size = 14) %>%
+  row_spec(0,        bold = TRUE, color = "#8b949e", background = "#161b22") %>%
+  row_spec(best_row, bold = TRUE, color = "#3fb950", background = "#0f2318") %>%
+  column_spec(1, bold = TRUE)
+```
+
+### About This Model
+
+```{r}
+htmltools::HTML('
+  <div class="about-card">
+    <div class="about-col">
+      <div class="about-label">What was done</div>
+      <p>Three linear regression models were estimated on federal employment salary data.
+      Variable selection used stepwise regression penalised by BIC (<code>k = log(n)</code>),
+      which applies a stricter parsimony penalty than AIC, especially at large sample sizes.
+      The bidirectional search both adds and removes variables at each step.</p>
+    </div>
+    <div class="about-col">
+      <div class="about-label">Why BIC over AIC</div>
+      <p>With over 230,000 observations, AIC tends to retain more variables than necessary.
+      BIC scaling by <code>log(n)</code> makes each additional predictor substantially more
+      costly, producing a leaner model less likely to overfit noise in the training data.</p>
+    </div>
+    <div class="about-col">
+      <div class="about-label">Interpreting R²</div>
+      <p>The selected model explains approximately <strong>56%</strong> of variance in salary.
+      The remaining 44% reflects individual negotiation, within-grade pay steps, performance
+      bonuses, and other factors not present in the dataset.</p>
+    </div>
+  </div>
+')
+```
+
+
+<!-- ############################################################
+     PAGE 2 — RESIDUAL ANALYSIS  (rows layout: formula top, plots below)
+     ############################################################ -->
+
+Residual Analysis {data-orientation=rows}
+=====================================
+
+Row {data-height=90}
+-------------------------------------
+
+### {data-width=1200}
+```{r}
+htmltools::HTML('
+  <div class="page-intro">
+    <strong>Residual Analysis</strong> — Residuals (Actual minus Predicted) reveal where the
+    model succeeds and where it struggles. Ideally residuals are centred at zero with symmetric
+    spread and no systematic patterns across agencies or salary levels.
+  </div>
+')
+```
+
+Row {data-height=460}
+-------------------------------------
+
+### Residual Distribution {data-width=500}
+```{r fig.height=4.2, fig.width=6}
+plot_df %>%
+  ggplot(aes(x = resid, fill = after_stat(x > 0))) +
+  geom_histogram(bins = 60, color = "transparent") +
+  scale_fill_manual(values = c("#58a6ff99","#f7816699"), guide = "none") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#e3b341", linewidth = .8) +
+  labs(title    = "Distribution of Residuals",
+       subtitle = "Blue = over-predicted  |  Orange = under-predicted",
+       x = "Residual ($k)", y = "Count") +
+  dark_theme
+```
+
+### Predicted vs. Actual {data-width=700}
+```{r fig.height=4.2, fig.width=8}
+plot_df %>%
+  slice_sample(n = min(3000, nrow(plot_df))) %>%
+  ggplot(aes(x = pred, y = SALARY, color = AGY)) +
+  geom_point(alpha = 0.35, size = 1) +
+  geom_abline(slope = 1, intercept = 0,
+              linetype = "dashed", color = "#e3b341", linewidth = .8) +
+  scale_color_manual(values = pal) +
+  labs(title    = "Predicted vs. Actual Salary",
+       subtitle = "3,000 point sample  |  Dashed = perfect prediction",
+       x = "Predicted ($k)", y = "Actual ($k)", color = "Agency") +
+  dark_theme
+```
+
+Row {data-height=130}
+-------------------------------------
+
+### Residual Distribution — Interpretation {data-width=500}
+```{r}
+htmltools::HTML('
+  <div class="interp-card">
+    <div class="interp-icon">📊</div>
+    <div><p>Residuals are roughly centred at zero as expected from OLS. The mild
+    <strong>right skew</strong> is typical for salary data — a small number of very high
+    earners are harder to predict, pulling the distribution rightward. A log transformation
+    of SALARY may reduce this skew in future iterations.</p></div>
+  </div>
+')
+```
+
+### Predicted vs. Actual — Interpretation {data-width=700}
+```{r}
+htmltools::HTML('
+  <div class="interp-card">
+    <div class="interp-icon">🎯</div>
+    <div><p>Points cluster along the 45° line confirming the model captures the central salary
+    trend. The <strong>spread widens at higher salaries</strong> — a classic sign of
+    heteroscedasticity. Senior and specialised roles have more individual variance not
+    explained by the administrative predictors.</p></div>
+  </div>
+')
+```
+
+Row {data-height=460}
+-------------------------------------
+
+### Residuals by Agency {data-width=1200}
+```{r fig.height=4.2, fig.width=13}
+plot_df %>%
+  group_by(AGY) %>%
+  slice_sample(n = 500, replace = TRUE) %>%
+  ungroup() %>%
+  ggplot(aes(x = reorder(AGY, resid, median), y = resid,
+             fill = AGY, color = AGY)) +
+  geom_violin(alpha = 0.5, linewidth = .4) +
+  geom_hline(yintercept = 0, linetype = "dashed",
+             color = "#e3b341", linewidth = .7) +
+  scale_fill_manual(values  = pal, guide = "none") +
+  scale_color_manual(values = pal, guide = "none") +
+  labs(title    = "Residual Distribution by Agency",
+       subtitle = "Ordered by median residual  |  Dashed = zero  |  500 obs/agency sample",
+       x = "Agency", y = "Residual ($k)") +
+  dark_theme
+```
+
+Row {data-height=130}
+-------------------------------------
+
+### Residuals by Agency — Interpretation {data-width=1200}
+```{r}
+htmltools::HTML('
+  <div class="interp-card">
+    <div class="interp-icon">🏛️</div>
+    <div><p>Agencies whose violins sit <strong>above zero</strong> are systematically
+    under-predicted. Those <strong>below zero</strong> are over-predicted. Wide violins
+    indicate high within-agency variance in prediction error, which may reflect heterogeneous
+    job types or pay scales not fully captured by the current predictors.</p></div>
+  </div>
+')
+```
+
+
+<!-- ############################################################
+     PAGE 3 — SALARY PATTERNS  (rows layout: formula top, plots below)
+     ############################################################ -->
+
+Salary Patterns {data-orientation=rows}
+=====================================
+
+Row {data-height=90}
+-------------------------------------
+
+### {data-width=1200}
+```{r}
+htmltools::HTML('
+  <div class="page-intro">
+    <strong>Salary Patterns</strong> — Exploring how salary varies with length of service,
+    agency, and education level, and how well the model captures those patterns.
+  </div>
+')
+```
+
+Row {data-height=460}
+-------------------------------------
+
+### Salary vs. Length of Service {data-width=1200}
+```{r fig.height=4.2, fig.width=13}
+model_df %>%
+  slice_sample(prop = 0.08) %>%
+  ggplot(aes(x = LOS, y = SALARY, color = AGY)) +
+  geom_point(alpha = 0.08, size = .8) +
+  geom_smooth(data = model_df, method = "lm", se = FALSE, linewidth = 1.2) +
+  scale_color_manual(values = pal) +
+  labs(title    = "Salary vs. Length of Service by Agency",
+       subtitle = "Regression line per agency  |  Points = 8% random sample",
+       x = "Length of Service (years)", y = "Salary ($k)", color = "Agency") +
+  dark_theme
+```
+
+Row {data-height=130}
+-------------------------------------
+
+### Length of Service — Interpretation {data-width=1200}
+```{r}
+htmltools::HTML('
+  <div class="interp-card">
+    <div class="interp-icon">📈</div>
+    <div><p>Each line shows the agency-specific salary growth rate with seniority.
+    <strong>Steeper slopes</strong> indicate a stronger seniority pay premium within that agency.
+    The diverging slopes across agencies supports including both <code>LOS</code> and
+    <code>AGY</code> as separate predictors. An interaction term <code>LOS:AGY</code>
+    would allow the model to capture these differing slopes directly.</p></div>
+  </div>
+')
+```
+
+Row {data-height=460}
+-------------------------------------
+
+### Predicted vs. Actual by Agency {data-width=700}
+```{r fig.height=4.2, fig.width=8}
+plot_df %>%
+  group_by(AGY) %>%
+  slice_sample(n = 300, replace = TRUE) %>%
+  ungroup() %>%
+  select(AGY, SALARY, pred) %>%
+  pivot_longer(c(SALARY, pred), names_to = "Type", values_to = "Salary") %>%
+  mutate(Type = recode(Type, SALARY = "Actual", pred = "Predicted")) %>%
+  ggplot(aes(x = AGY, y = Salary, fill = Type)) +
+  geom_violin(alpha = 0.6, position = position_dodge(.9), linewidth = .3) +
+  scale_fill_manual(values = c(Actual = "#58a6ff99", Predicted = "#3fb95099")) +
+  labs(title    = "Predicted vs. Actual Salary by Agency",
+       subtitle = "Blue = Actual  |  Green = Predicted  |  300 obs/agency sample",
+       x = "Agency", y = "Salary ($k)", fill = NULL) +
+  dark_theme
+```
+
+### Salary by Education Level {data-width=500}
+```{r fig.height=4.2, fig.width=6}
+model_df %>%
+  group_by(EDLVL) %>%
+  summarise(avg_salary = mean(SALARY, na.rm = TRUE), n = n(), .groups = "drop") %>%
+  arrange(EDLVL) %>%
+  ggplot(aes(x = factor(EDLVL), y = avg_salary)) +
+  geom_col(fill = "#d2a8ff55", color = "#d2a8ff", linewidth = .6) +
+  geom_line(aes(group = 1), color = "#d2a8ff", linewidth = 1.1) +
+  geom_point(color = "#d2a8ff", size = 3) +
+  labs(title    = "Average Salary by Education Level",
+       subtitle = "Higher codes = more advanced qualifications",
+       x = "EDLVL Code", y = "Average Salary ($k)") +
+  dark_theme
+```
+
+Row {data-height=160}
+-------------------------------------
+
+### Predicted vs. Actual — Interpretation {data-width=700}
+```{r}
+htmltools::HTML('
+  <div class="interp-card">
+    <div class="interp-icon">🎻</div>
+    <div><p>Paired violins compare actual (blue) and predicted (green) salary distributions
+    per agency. A <strong>narrower predicted violin</strong> indicates the model compresses
+    extreme values — capturing the centre but missing the tails, a known limitation of OLS
+    minimising squared error.</p></div>
+  </div>
+')
+```
+
+### Education Level — Interpretation {data-width=500}
+```{r}
+htmltools::HTML('
+  <div class="interp-card">
+    <div class="interp-icon">🎓</div>
+    <div><p>The monotonically increasing trend confirms education is a meaningful positive
+    predictor of federal salary. The <strong>steeper rise at higher EDLVL codes</strong>
+    suggests non-linear returns to education. A quadratic term or factor encoding of EDLVL
+    may improve fit beyond the current linear treatment.</p></div>
+  </div>
+')
+```
