@@ -1,0 +1,1295 @@
+---
+title: "DoD Acquisition Workforce Trends"
+author: "4ward Acquisition"
+date: "2026-05-01"
+output:
+  flexdashboard::flex_dashboard:
+    vertical_layout: scroll
+    theme: bootstrap
+    css: dashboard_style.css
+    navbar:
+      - { title: "Connor Arnold, Connor Ferrell, Jordan O'Dell, Josh Collins", align: right }
+      - { title: "April 2026",   align: right }
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(knitr)
+library(tidyverse)
+library(olsrr)
+library(faraway)
+library(leaps)
+library(GGally)
+library(glmnet)
+library(quantreg)
+library(kableExtra)
+library(modelr)
+library(htmltools)
+library(scales)
+
+knitr::opts_chunk$set(
+  echo    = FALSE,
+  comment = NA,
+  message = FALSE,
+  warning = FALSE,
+  fig.retina = 2
+)
+
+dark_theme <- theme_minimal(base_size = 13) +
+  theme(
+    plot.background   = element_rect(fill = "#161b22", color = NA),
+    panel.background  = element_rect(fill = "#161b22", color = NA),
+    panel.grid.major  = element_line(color = "#1c2330"),
+    panel.grid.minor  = element_blank(),
+    plot.title        = element_text(color = "#e6edf3", face = "bold", size = 14),
+    plot.subtitle     = element_text(color = "#8b949e", size = 11),
+    axis.text         = element_text(color = "#8b949e"),
+    axis.title        = element_text(color = "#8b949e"),
+    legend.background = element_rect(fill = "#161b22", color = NA),
+    legend.text       = element_text(color = "#8b949e"),
+    legend.title      = element_text(color = "#8b949e"),
+    strip.text        = element_text(color = "#8b949e"),
+    plot.margin       = margin(16, 20, 16, 20)
+  )
+```
+
+```{r data-prep}
+combined <- read_csv("data/clean/combined.csv")
+
+combined_clean <- combined %>%
+  filter(!is.na(SALARY), !is.na(AGY), !is.na(EDLVL), !is.na(LOS)) %>%
+  droplevels()
+
+combined_clean$SALARY <- combined_clean$SALARY / 1000
+
+model_df <- combined_clean %>%
+  select(-GSEGRD, -WORKSCH, -WORKSTAT, -PP, -PPGRD, -TOA, -SALLVLT, -AGYSUBT, -AGYSUB) %>%
+  mutate(
+    LOC    = ifelse(grepl("^[0-9]+$", LOC), LOC, "57"),
+    LOC    = as.numeric(LOC),
+    EDLVL  = na_if(EDLVL, "**"),
+    EDLVL  = as.numeric(EDLVL),
+    LOSLVL = na_if(LOSLVL, "Z"),
+    LOSLVL = match(LOSLVL, c("A","B","C","D","E","F","G","H","I","J")),
+    AGELVL = match(AGELVL, c("B","C","D","E","F","G","H","I","J","K"))
+  ) %>%
+  na.omit() %>%
+  droplevels()
+
+bad_vars <- names(which(sapply(model_df, function(x) length(unique(x)) < 2)))
+model_df <- model_df %>% select(-all_of(bad_vars)) %>% droplevels()
+
+null_model   <- lm(SALARY ~ 1, data = model_df)
+upper_model  <- lm(SALARY ~ ., data = model_df)
+n            <- nrow(model_df)
+
+forward_bic  <- step(null_model, direction = "forward",
+                     scope = formula(upper_model), k = log(n), trace = 0)
+step_bic     <- step(null_model, direction = "both",
+                     scope = formula(upper_model), k = log(n), trace = 0)
+simple_model <- lm(SALARY ~ LOS + AGELVL + EDLVL, data = model_df)
+
+plot_df <- model_df %>%
+  add_predictions(step_bic, var = "pred") %>%
+  add_residuals(step_bic,   var = "resid")
+
+agency_levels <- levels(factor(plot_df$AGY))
+pal <- colorRampPalette(
+  c("#58a6ff","#3fb950","#f78166","#d2a8ff","#e3b341",
+    "#79c0ff","#56d364","#ffa657","#ff7b72","#b392f0")
+)(length(agency_levels))
+names(pal) <- agency_levels
+```
+
+```{r model-comparison-setup, include=FALSE}
+library(caret)
+
+reg_metrics <- function(actual, predicted) {
+  resid  <- actual - predicted
+  rmse   <- sqrt(mean(resid^2))
+  mae    <- mean(abs(resid))
+  ss_res <- sum(resid^2)
+  ss_tot <- sum((actual - mean(actual))^2)
+  r2     <- 1 - ss_res / ss_tot
+  tibble(RMSE = rmse, MAE = mae, R2 = r2)
+}
+
+set.seed(42)
+cv_ctrl <- trainControl(
+  method          = "repeatedcv",
+  number          = 10,
+  repeats         = 3,
+  savePredictions = "final"
+)
+
+cv_step    <- train(formula(step_bic),    data = model_df, method = "lm", trControl = cv_ctrl)
+cv_forward <- train(formula(forward_bic), data = model_df, method = "lm", trControl = cv_ctrl)
+cv_simple  <- train(SALARY ~ LOS + AGELVL + EDLVL, data = model_df, method = "lm", trControl = cv_ctrl)
+
+cv_loslvl  <- train(update(formula(simple_model), . ~ . - LOS + LOSLVL),
+                    data = model_df, method = "lm", trControl = cv_ctrl)
+cv_agy     <- train(SALARY ~ LOS + AGY + EDLVL, data = model_df,
+                    method = "lm", trControl = cv_ctrl)
+cv_edquad  <- train(SALARY ~ LOS + AGELVL + EDLVL + I(EDLVL^2),
+                    data = model_df, method = "lm", trControl = cv_ctrl)
+cv_combo   <- train(SALARY ~ LOSLVL + AGY + EDLVL + I(EDLVL^2),
+                    data = model_df, method = "lm", trControl = cv_ctrl)
+
+extract_cv <- function(fit, label) {
+  preds <- fit$pred
+  reg_metrics(preds$obs, preds$pred) %>%
+    mutate(Model = label, .before = 1)
+}
+
+cv_results <- bind_rows(
+  extract_cv(cv_step,    "Bidirectional Selection (Stepwise)"),
+  extract_cv(cv_forward, "Forward Selection (Stepwise)"),
+  extract_cv(cv_simple,  "Simple (LOS + AGELVL + EDLVL)"),
+  extract_cv(cv_loslvl,  "Swap: LOSLVL instead of LOS"),
+  extract_cv(cv_agy,     "Swap: AGY instead of AGELVL"),
+  extract_cv(cv_edquad,  "Swap: EDLVL + EDLVL²"),
+  extract_cv(cv_combo,   "Swap: LOSLVL + AGY + EDLVL²")
+) %>%
+  arrange(RMSE)
+
+best_model_label <- cv_results$Model[1]
+
+insample_results <- bind_rows(
+  reg_metrics(model_df$SALARY, predict(step_bic,    model_df)) %>% mutate(Model = "Bidirectional Selection (Stepwise)"),
+  reg_metrics(model_df$SALARY, predict(forward_bic, model_df)) %>% mutate(Model = "Forward Selection (Stepwise)"),
+  reg_metrics(model_df$SALARY, predict(simple_model,model_df)) %>% mutate(Model = "Simple (LOS + AGELVL + EDLVL)")
+) %>% select(Model, RMSE, MAE, R2)
+```
+
+<!-- ############################################################
+     PAGE 1 — MODEL SUMMARY  (columns layout: stats pinned left)
+     ############################################################ -->
+
+Model Summary {data-orientation=rows}
+=====================================
+
+Row
+-------------------------------------
+
+###
+
+```{r}
+terms <- attr(terms(step_bic), "term.labels")
+r2    <- round(summary(step_bic)$r.squared, 3)
+
+page1_models <- c(
+  "Bidirectional Selection (Stepwise)",
+  "Simple (LOS + AGELVL + EDLVL)",
+  "Swap: LOSLVL instead of LOS",
+  "Swap: AGY instead of AGELVL",
+  "Swap: EDLVL + EDLVL²",
+  "Swap: LOSLVL + AGY + EDLVL²"
+)
+comparison_tbl <- cv_results %>%
+  filter(Model %in% page1_models) %>%
+  mutate(Model = factor(Model, levels = page1_models)) %>%
+  arrange(Model) %>%
+  mutate(RMSE = round(RMSE, 2), MAE = round(MAE, 2), R2 = round(R2, 4)) %>%
+  select(Model, RMSE, MAE, R2)
+
+best_row <- which.min(comparison_tbl$RMSE)
+
+table_html <- comparison_tbl %>%
+  kbl(align     = c("l","r","r","r"),
+      col.names = c("Model", "RMSE", "MAE", "Adj R2"),
+      format    = "html",
+      escape    = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped","hover"),
+                full_width = TRUE, font_size = 14) %>%
+  row_spec(best_row, bold = TRUE, color = "#3fb950", background = "#0f2318") %>%
+  column_spec(1, bold = TRUE) %>%
+  as.character()
+
+a_on  <- "background:#1c2b3a; color:#e6edf3; border:1px solid #58a6ff; padding:0.7rem 1rem; border-radius:6px; font-size:1rem; cursor:pointer; text-align:left; width:100%; margin-bottom:0.5rem;"
+a_off <- "background:#161b22; color:#e6edf3; border:1px solid #30363d; padding:0.7rem 1rem; border-radius:6px; font-size:1rem; cursor:pointer; text-align:left; width:100%; margin-bottom:0.5rem;"
+
+htmltools::HTML(paste0('
+
+<div style="display:flex; height:100%; gap:0;">
+
+  <!-- ── Sidebar ── -->
+  <div style="width:220px; min-width:220px; padding:1rem;
+              border-right:1px solid #30363d; box-sizing:border-box;">
+    <div style="font-size:1.05rem; font-weight:bold; color:#e6edf3; margin-bottom:0.4rem;">
+      Navigation
+    </div>
+    <div style="font-size:0.9rem; color:#8b949e; margin-bottom:1rem;">
+      Select a section to view.
+    </div>
+    <button id="nav-btn-model" onclick="navSelect(\'model\')" style="', a_on,  '">Model Summary</button>
+    <button id="nav-btn-data"  onclick="navSelect(\'data\')"  style="', a_off, '">Data Sources</button>
+  </div>
+
+  <!-- ── Content ── -->
+  <div style="flex:1; overflow-y:auto; padding:1.2rem;">
+
+    <!-- MODEL SUMMARY -->
+    <div id="nav-sec-model" style="display:block;">
+      <div style="display:flex; gap:1.5rem;">
+
+        <!-- Stats block -->
+        <div class="sidebar-stats" style="font-size:1rem; line-height:1.8;
+             padding:1.2rem; min-width:220px; max-width:240px;">
+
+          <div class="stat-block" style="margin-bottom:1rem;">
+            <div class="stat-label" style="font-size:0.95rem;">Observations</div>
+            <div class="stat-value accent-blue" style="font-size:2rem;">', scales::comma(n), '</div>
+          </div>
+
+          <div class="stat-block" style="margin-bottom:1rem;">
+            <div class="stat-label" style="font-size:0.95rem;">Selected Model</div>
+            <div class="stat-value" style="font-size:1.4rem;">Bidirectional Selection (Stepwise)</div>
+          </div>
+
+          <div class="stat-block" style="margin-bottom:1rem;">
+            <div class="stat-label" style="font-size:0.95rem;">R-squared</div>
+            <div class="stat-value accent-green" style="font-size:2rem;">', r2, '</div>
+            <div class="stat-sub" style="font-size:0.9rem;">Model explains ', round(r2*100), '% of salary variance</div>
+          </div>
+
+          <div class="stat-block" style="margin-bottom:1rem;">
+            <div class="stat-label" style="font-size:0.95rem;">BIC</div>
+            <div class="stat-value accent-purple" style="font-size:2rem;">', scales::comma(round(BIC(step_bic),0)), '</div>
+          </div>
+
+          <div class="stat-divider"></div>
+
+          <div class="stat-label" style="font-size:0.95rem;">Predictors (', length(terms), ')</div>
+          <div class="formula-terms" style="margin-top:0.6rem; gap:0.4rem;">',
+            paste(sprintf('<span class="term-badge" style="font-size:0.9rem; padding:0.3rem 0.6rem;">%s</span>', terms), collapse=" "),
+          '</div>
+
+          <div class="stat-divider"></div>
+
+          <div class="stat-label" style="font-size:0.95rem; margin-bottom:0.5rem;">Selection Method</div>
+          <div class="formula-meta" style="flex-direction:column; gap:0.5rem; border:none; padding:0; font-size:0.95rem;">
+            <span>Direction: <strong>both</strong></span>
+            <span>Penalty: <strong>k = log(n)</strong></span>
+            <span>Response: <strong>SALARY / 1000</strong></span>
+          </div>
+
+        </div>
+
+        <!-- Table + about -->
+        <div style="flex:1; display:flex; flex-direction:column; gap:1.2rem;">
+
+          ', table_html, '
+
+          <div class="about-card" style="display:flex; flex-direction:row;
+               gap:2.5rem; padding:2rem; box-sizing:border-box;">
+            <div class="about-col" style="flex:1; font-size:1.4rem; line-height:2;">
+              <div class="about-label" style="font-size:1.5rem; font-weight:bold; margin-bottom:0.8rem;">What was done</div>
+              <p>Six models were estimated on federal employment salary data and evaluated using
+              10-fold cross-validation (3 repeats). The <strong>Bidirection Selection (Stepwise)</strong> model was
+              selected via bidirectional stepwise regression penalised by <code>k = log(n)</code>.
+              The remaining rows test whether swapping individual predictors improves out-of-sample
+              performance over the simple three-variable baseline.</p>
+            </div>
+            <div class="about-col" style="flex:1; font-size:1.4rem; line-height:2;">
+              <div class="about-label" style="font-size:1.5rem; font-weight:bold; margin-bottom:0.8rem;">Reading the table</div>
+              <p><strong>RMSE</strong> penalises large errors heavily, lower is better.
+              <strong>MAE</strong> gives the average absolute miss in thousands of dollars.
+              <strong>Adj R²</strong> is the share of salary variance explained out-of-sample.
+              The green row is the best-performing model by RMSE.</p>
+            </div>
+            <div class="about-col" style="flex:1; font-size:1.4rem; line-height:2;">
+              <div class="about-label" style="font-size:1.5rem; font-weight:bold; margin-bottom:0.8rem;">What this model tells us</div>
+              <p>This model estimates what a federal civilian employee should expect to earn based on factors like education, years of service, age, and agency. Once the model is built, we can compare its predictions against what employees actually earn. Employees or agencies where actual pay consistently exceeds the prediction may be paying above what their workforce characteristics would typically justify. We use this approach to identify which DoD components; Army, Navy, Air Force, or DoD Other, pay their civilian employees more or less than the department average after accounting for those background factors.</p>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- DATA SOURCES -->
+    <div id="nav-sec-data" style="display:none; overflow-y:auto;">
+
+      <div style="font-size:1.6rem; font-weight:bold; color:#e6edf3; margin-bottom:0.3rem;">
+        Data Sources
+      </div>
+      <div style="font-size:1.1rem; color:#8b949e; margin-bottom:1.8rem;">
+        This dashboard draws on two public federal datasets covering fiscal years 2015–2023.
+      </div>
+
+      <!-- UoM -->
+      <div class="about-card" style="flex-direction:column; padding:1.5rem; margin-bottom:1.5rem; gap:1rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+          <div style="font-size:1.35rem; font-weight:bold; color:#58a6ff;">
+            University of Michigan — Federal Contractor Employment Data
+          </div>
+          <a href="https://www.datalumos.org" target="_blank"
+             style="font-size:0.95rem; color:#58a6ff; text-decoration:none;">
+            datalumos.org ↗
+          </a>
+        </div>
+        <p style="font-size:1.1rem; line-height:1.8; color:#c9d1d9;">
+          This dataset contains individual-level records of federal civilian employees drawn from
+          OPM administrative files and made available through the University of Michigan. Each row
+          represents one employee observation at a given pay period, capturing demographics,
+          job classification, agency assignment, and compensation. The salary analysis and
+          regression models in this dashboard are built entirely on this source.
+        </p>
+        <div style="font-size:1.15rem; font-weight:bold; color:#8b949e; margin-top:0.5rem; margin-bottom:0.3rem;">
+          Data Dictionary
+        </div>
+        <table style="width:100%; border-collapse:collapse; font-size:1.05rem; color:#c9d1d9;">
+          <thead>
+            <tr style="border-bottom:1px solid #30363d; color:#8b949e; text-align:left;">
+              <th style="padding:0.5rem 0.8rem; width:12%;">Variable</th>
+              <th style="padding:0.5rem 0.8rem; width:28%;">Full Name</th>
+              <th style="padding:0.5rem 0.8rem;">Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:0.5rem 0.8rem;"><code>AGY</code></td>
+              <td style="padding:0.5rem 0.8rem;">Agency Code</td>
+              <td style="padding:0.5rem 0.8rem;">4-character code identifying the employing federal agency (e.g. AR = Army, NV = Navy, AF = Air Force).</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d; background:#1c2330;">
+              <td style="padding:0.5rem 0.8rem;"><code>AGYSUB</code></td>
+              <td style="padding:0.5rem 0.8rem;">Agency Sub-element Code</td>
+              <td style="padding:0.5rem 0.8rem;">Sub-agency or bureau within the parent agency. Provides finer organisational detail than AGY alone.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:0.5rem 0.8rem;"><code>LOC</code></td>
+              <td style="padding:0.5rem 0.8rem;">Location Code</td>
+              <td style="padding:0.5rem 0.8rem;">Numeric code for the duty station location. Non-numeric values (foreign posts) were recoded to 57 (Overseas).</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d; background:#1c2330;">
+              <td style="padding:0.5rem 0.8rem;"><code>AGELVL</code></td>
+              <td style="padding:0.5rem 0.8rem;">Age Level</td>
+              <td style="padding:0.5rem 0.8rem;">Ordinal age band of the employee (B–K, mapped to integers 1–10). B = under 20, K = 60 and over.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:0.5rem 0.8rem;"><code>EDLVL</code></td>
+              <td style="padding:0.5rem 0.8rem;">Education Level</td>
+              <td style="padding:0.5rem 0.8rem;">Numeric code for highest completed education. Higher codes indicate more advanced qualifications; ranges from no formal schooling to doctoral/professional degree.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d; background:#1c2330;">
+              <td style="padding:0.5rem 0.8rem;"><code>GSEGRD</code></td>
+              <td style="padding:0.5rem 0.8rem;">General Schedule / Equivalent Grade</td>
+              <td style="padding:0.5rem 0.8rem;">Pay grade under the General Schedule (GS-1 to GS-15) or equivalent system. Dropped from model due to near-perfect collinearity with salary.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:0.5rem 0.8rem;"><code>LOSLVL</code></td>
+              <td style="padding:0.5rem 0.8rem;">Length of Service Level</td>
+              <td style="padding:0.5rem 0.8rem;">Ordinal band of federal service tenure (A–J, mapped to integers 1–10). A = less than 1 year, J = 30 or more years.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d; background:#1c2330;">
+              <td style="padding:0.5rem 0.8rem;"><code>OCC</code></td>
+              <td style="padding:0.5rem 0.8rem;">Occupation Code</td>
+              <td style="padding:0.5rem 0.8rem;">4-digit OPM occupational series code identifying the employee\'s job family (e.g. 0343 = Management and Program Analysis).</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:0.5rem 0.8rem;"><code>PATCO</code></td>
+              <td style="padding:0.5rem 0.8rem;">PATCO Occupational Category</td>
+              <td style="padding:0.5rem 0.8rem;">Broad occupational grouping: P = Professional, A = Administrative, T = Technical, C = Clerical, O = Other, B = Blue Collar.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d; background:#1c2330;">
+              <td style="padding:0.5rem 0.8rem;"><code>PP</code></td>
+              <td style="padding:0.5rem 0.8rem;">Pay Plan</td>
+              <td style="padding:0.5rem 0.8rem;">Code for the pay system governing the employee\'s compensation (e.g. GS = General Schedule, SES = Senior Executive Service).</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:0.5rem 0.8rem;"><code>PPGRD</code></td>
+              <td style="padding:0.5rem 0.8rem;">Pay Plan / Grade</td>
+              <td style="padding:0.5rem 0.8rem;">Combined pay plan and grade identifier. Removed during cleaning due to redundancy with PP and GSEGRD.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d; background:#1c2330;">
+              <td style="padding:0.5rem 0.8rem;"><code>STEMOCC</code></td>
+              <td style="padding:0.5rem 0.8rem;">STEM Occupation Flag</td>
+              <td style="padding:0.5rem 0.8rem;">Indicates whether the occupational series is classified as Science, Technology, Engineering, or Mathematics (1 = STEM, 0 = non-STEM).</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:0.5rem 0.8rem;"><code>SUPERVIS</code></td>
+              <td style="padding:0.5rem 0.8rem;">Supervisory Status</td>
+              <td style="padding:0.5rem 0.8rem;">Code indicating supervisory or managerial responsibility. Values range from non-supervisor through team leader, supervisor, manager, and executive.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d; background:#1c2330;">
+              <td style="padding:0.5rem 0.8rem;"><code>TOA</code></td>
+              <td style="padding:0.5rem 0.8rem;">Type of Appointment</td>
+              <td style="padding:0.5rem 0.8rem;">Nature of the employment appointment (e.g. career, career-conditional, term, temporary). Removed during model preparation.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:0.5rem 0.8rem;"><code>WORKSCH</code></td>
+              <td style="padding:0.5rem 0.8rem;">Work Schedule</td>
+              <td style="padding:0.5rem 0.8rem;">Full-time, part-time, intermittent, or seasonal classification. Removed during model preparation.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d; background:#1c2330;">
+              <td style="padding:0.5rem 0.8rem;"><code>WORKSTAT</code></td>
+              <td style="padding:0.5rem 0.8rem;">Work Status</td>
+              <td style="padding:0.5rem 0.8rem;">Active vs non-active employment status at time of record. Removed during model preparation.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:0.5rem 0.8rem;"><code>DATECODE</code></td>
+              <td style="padding:0.5rem 0.8rem;">Date Code</td>
+              <td style="padding:0.5rem 0.8rem;">6-digit YYYYMM code for the pay period snapshot. Used to construct monthly time series for the contract spend comparisons.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- USAspending -->
+      <div class="about-card" style="flex-direction:column; padding:1.5rem; margin-bottom:1.5rem; gap:1rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+          <div style="font-size:1.35rem; font-weight:bold; color:#3fb950;">
+            USAspending.gov — Federal Contract Awards
+          </div>
+          <a href="https://www.usaspending.gov" target="_blank"
+             style="font-size:0.95rem; color:#58a6ff; text-decoration:none;">
+            usaspending.gov ↗
+          </a>
+        </div>
+        <p style="font-size:1.1rem; line-height:1.8; color:#c9d1d9;">
+          USAspending.gov is the official source for federal spending data, maintained by the
+          Bureau of the Fiscal Service. Contract award data was downloaded directly filtered to
+          DoD agencies for fiscal years 2015–2023, covering only contract award types (excluding
+          grants, loans, and other financial assistance). The raw download contained approximately
+          300 columns; four were retained for this analysis to manage file size.
+        </p>
+        <div style="font-size:1.15rem; font-weight:bold; color:#8b949e; margin-top:0.5rem; margin-bottom:0.3rem;">
+          Data Dictionary — Retained Columns
+        </div>
+        <table style="width:100%; border-collapse:collapse; font-size:1.05rem; color:#c9d1d9;">
+          <thead>
+            <tr style="border-bottom:1px solid #30363d; color:#8b949e; text-align:left;">
+              <th style="padding:0.5rem 0.8rem; width:28%;">Variable</th>
+              <th style="padding:0.5rem 0.8rem;">Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:0.5rem 0.8rem;"><code>action_date</code></td>
+              <td style="padding:0.5rem 0.8rem;">Date the contract action was recorded. Used to construct monthly and annual time series of obligation activity.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d; background:#1c2330;">
+              <td style="padding:0.5rem 0.8rem;"><code>federal_action_obligation</code></td>
+              <td style="padding:0.5rem 0.8rem;">Dollar amount obligated by the federal government for the contract action. Negative values represent deobligations. Summed to produce monthly total contract spend.</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d;">
+              <td style="padding:0.5rem 0.8rem;"><code>awarding_agency_code</code></td>
+              <td style="padding:0.5rem 0.8rem;">Top-level agency code for the awarding organisation. All records in this dataset are Department of Defense (097).</td>
+            </tr>
+            <tr style="border-bottom:1px solid #21262d; background:#1c2330;">
+              <td style="padding:0.5rem 0.8rem;"><code>awarding_sub_agency_code</code></td>
+              <td style="padding:0.5rem 0.8rem;">Sub-agency code used to map contract records to the four salary analysis components: Army (2100), Navy (1700), Air Force (5700), and DoD Other (97xx codes).</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+function navSelect(key) {
+  ["model","data"].forEach(function(k) {
+    var btn = document.getElementById("nav-btn-" + k);
+    var sec = document.getElementById("nav-sec-" + k);
+    btn.style.background  = "#161b22";
+    btn.style.borderColor = "#30363d";
+    if (sec) sec.style.display = "none";
+  });
+  document.getElementById("nav-btn-" + key).style.background  = "#1c2b3a";
+  document.getElementById("nav-btn-" + key).style.borderColor = "#58a6ff";
+  document.getElementById("nav-sec-" + key).style.display     = "block";
+}
+</script>
+
+'))
+```
+
+
+<!-- ############################################################
+     PAGE 2 — RESIDUAL ANALYSIS  (rows layout: formula top, plots below)
+     ############################################################ -->
+
+Residual Analysis {data-orientation=rows}
+=====================================
+
+Row {data-height=90}
+-------------------------------------
+
+### {data-width=1200}
+```{r}
+htmltools::HTML('
+  <div class="page-intro" style="font-size:1.3rem; line-height:1.8;">
+    <strong>Residual Analysis</strong> — Residuals (Actual minus Predicted) reveal where the
+    model succeeds and where it struggles. Ideally residuals are centred at zero with symmetric
+    spread and no systematic patterns across agencies or salary levels.
+  </div>
+')
+```
+
+Row {data-height=500}
+-------------------------------------
+
+### Residual Distribution {data-width=500}
+```{r fig.height=4.2, fig.width=6}
+plot_df %>%
+  ggplot(aes(x = resid, fill = after_stat(x > 0))) +
+  geom_histogram(bins = 60, color = "transparent") +
+  scale_fill_manual(values = c("#58a6ff99","#f7816699"), guide = "none") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#e3b341", linewidth = .8) +
+  labs(title    = "Distribution of Residuals",
+       subtitle = "Blue = over-predicted  |  Orange = under-predicted",
+       x = "Residual (thousands of dollars)", y = "Count") +
+  dark_theme
+```
+
+### Predicted vs. Actual {data-width=700}
+```{r fig.height=4.2, fig.width=8}
+plot_df %>%
+  slice_sample(n = min(3000, nrow(plot_df))) %>%
+  ggplot(aes(x = pred, y = SALARY, color = AGY)) +
+  geom_point(alpha = 0.35, size = 1) +
+  geom_abline(slope = 1, intercept = 0,
+              linetype = "dashed", color = "#e3b341", linewidth = .8) +
+  scale_color_manual(values = pal) +
+  guides(color = guide_legend(override.aes = list(alpha = 1, size = 3))) +
+  labs(title    = "Predicted vs. Actual Salary",
+       subtitle = "3,000 point sample  |  Dashed = perfect prediction",
+       x = "Predicted (thousands of dollars)", y = "Actual (thousands of dollars)", color = "Agency") +
+  dark_theme
+```
+
+Row {data-height=400}
+-------------------------------------
+
+### Residual Distribution — Interpretation {data-width=500}
+```{r}
+htmltools::HTML('
+  <div class="interp-card" style="font-size:1.2rem; line-height:1.9; padding:1.2rem;">
+    <div class="interp-icon" style="font-size:1.8rem;"></div>
+    <div><p>A residual is simply the gap between what the model predicted someone would earn
+    and what they actually earn. When these gaps are centred at zero it means the model is
+    not systematically over or under paying people on average, which is what we want.
+    The slight <strong>lean to the right</strong> in this chart means there are a small number
+    of employees the model underestimates, it predicts a lower salary than they actually
+    receive. Within DoD, this tends to be senior civilian roles at organisations like the
+    <strong>Office of the Secretary of Defense (OSD)</strong> and the
+    <strong>Defense Information Systems Agency (DISA)</strong>, where highly specialised
+    technical or policy expertise commands pay that standard job classification codes alone
+    do not fully explain.</p></div>
+  </div>
+')
+```
+
+### Predicted vs. Actual — Interpretation {data-width=700}
+```{r}
+htmltools::HTML('
+  <div class="interp-card" style="font-size:1.2rem; line-height:1.9; padding:1.2rem;">
+    <div class="interp-icon" style="font-size:1.8rem;"></div>
+    <div><p>Each dot on this chart is one employee. If the model were perfect, every dot would
+    fall exactly on the dashed diagonal line, meaning predicted salary equals actual salary.
+    The dots cluster well along that line at lower salaries, showing the model works well for
+    most employees. However, <strong>the cloud of dots fans out at higher salaries</strong>,
+    meaning the model becomes less precise as pay increases. Statisticians call this
+    <strong>heteroscedasticity</strong>, a term that simply means the size of the model\'s
+    errors is not consistent across the range of salaries, it grows larger as salaries grow
+    larger. In plain terms: the model is good at predicting what a mid-level employee earns,
+    but less reliable for senior or highly specialised staff. This is visible across
+    Army, Navy, and Air Force civilian employees in senior grades, where individual pay
+    decisions, location-based pay adjustments, and retention bonuses introduce variation
+    that a single formula cannot fully capture. Importantly, no single branch is responsible
+    for this, the spread is shared across all components, pointing to a structural
+    limitation of the data rather than a problem with any one agency.</p></div>
+  </div>
+')
+```
+
+Row {data-height=500}
+-------------------------------------
+
+### Residuals by Agency {data-width=1200}
+```{r fig.height=4.2, fig.width=13}
+plot_df %>%
+  group_by(AGY) %>%
+  slice_sample(n = 500, replace = TRUE) %>%
+  ungroup() %>%
+  ggplot(aes(x = reorder(AGY, resid, median), y = resid,
+             fill = AGY, color = AGY)) +
+  geom_violin(alpha = 0.5, linewidth = .4) +
+  geom_hline(yintercept = 0, linetype = "dashed",
+             color = "#e3b341", linewidth = .7) +
+  scale_fill_manual(values  = pal, guide = "none") +
+  scale_color_manual(values = pal, guide = "none") +
+  labs(title    = "Residual Distribution by Agency",
+       subtitle = "Ordered by median residual  |  Dashed = zero  |  500 obs/agency sample",
+       x = "Agency", y = "Residual (thousands of dollars)") +
+  dark_theme
+```
+
+Row {data-height=400}
+-------------------------------------
+
+### Residuals by Agency — Interpretation {data-width=1200}
+```{r}
+htmltools::HTML('
+  <div class="interp-card" style="font-size:1.2rem; line-height:1.9; padding:1.2rem;">
+    <div class="interp-icon" style="font-size:1.8rem;">️</div>
+    <div><p>These shapes are called <strong>violin plots</strong>, think of each one as a
+    sideways histogram showing where most of the prediction errors fall for that agency.
+    A wide middle means many employees cluster around that error value; a thin tip means
+    only a few employees sit out there. The <strong>dashed line at zero</strong> is the
+    target, a dot sitting exactly on it would mean the model predicted that person\'s
+    salary perfectly.
+    <br><br>
+    Agencies whose violin sits <strong>above zero</strong> are ones where the model
+    consistently underestimates pay, it predicts lower salaries than employees actually
+    receive. This is common where mission-specific expertise commands a premium that job
+    classification alone does not capture. The <strong>Department of the Navy</strong> and
+    <strong>Department of the Air Force</strong> civilian workforces fall into this category,
+    as both employ large numbers of engineers and acquisition specialists whose compensation
+    outpaces what years of service and education level alone would predict.
+    <br><br>
+    Agencies sitting <strong>below zero</strong> are ones the model overestimates, it
+    predicts higher salaries than employees actually earn. This often reflects a higher
+    proportion of administrative or support roles where actual pay sits below what the
+    grade and seniority combination would typically suggest.
+    <br><br>
+    A <strong>wide violin</strong> means the model\'s accuracy varies a lot within that
+    agency, some employees are predicted well, others are badly missed. The
+    <strong>Department of the Army</strong> shows this pattern clearly, because its
+    civilian workforce spans an unusually broad range of job types, from installation
+    maintenance and logistics support all the way through to research scientists and
+    engineers, making a single salary formula a poor fit for many individuals.
+    A <strong>narrow violin</strong> means the workforce is more uniform and the model
+    performs consistently across it.</p></div>
+  </div>
+')
+```
+
+
+<!-- ############################################################
+     PAGE 3 — SALARY PATTERNS  (rows layout: formula top, plots below)
+     ############################################################ -->
+
+Salary Patterns {data-orientation=rows}
+=====================================
+
+Row {data-height=90}
+-------------------------------------
+
+### {data-width=1200}
+```{r}
+htmltools::HTML('
+  <div class="page-intro" style="font-size:1.3rem; line-height:1.8;">
+    <strong>Salary Patterns</strong> — Exploring how salary varies with length of service,
+    agency, and education level, and how well the model captures those patterns across
+    the Army, Navy, Air Force, and broader Defense components.
+  </div>
+')
+```
+
+Row {data-height=500}
+-------------------------------------
+
+### Salary vs. Length of Service {data-width=1200}
+```{r fig.height=4.2, fig.width=13}
+model_df %>%
+  slice_sample(prop = 0.08) %>%
+  ggplot(aes(x = LOS, y = SALARY, color = AGY)) +
+  geom_point(alpha = 0.08, size = .8) +
+  geom_smooth(data = model_df, method = "lm", se = FALSE, linewidth = 1.2) +
+  scale_color_manual(values = pal) +
+  labs(title    = "Salary vs. Length of Service by Agency",
+       subtitle = "Regression line per agency  |  Points = 8% random sample",
+       x = "Length of Service (years)", y = "Salary (thousands of dollars)", color = "Agency") +
+  dark_theme
+```
+
+Row {data-height=400}
+-------------------------------------
+
+### Length of Service — Interpretation {data-width=1200}
+```{r}
+htmltools::HTML('
+  <div class="interp-card" style="font-size:1.2rem; line-height:1.9; padding:1.2rem;">
+    <div class="interp-icon" style="font-size:1.8rem;"></div>
+    <div><p>Each line on this chart represents one agency, and shows how average salary
+    tends to change as employees accumulate more years of federal service. The
+    <strong>steeper the line, the faster salaries grow with seniority</strong> in that
+    agency, in other words, staying longer pays off more. A flatter line means pay
+    increases more slowly with tenure, often because the workforce includes many roles
+    where there is a lower ceiling on how high salaries can go regardless of experience.
+    <br><br>
+    The <strong>Department of the Air Force</strong> and <strong>Department of the Navy</strong>
+    tend to show steeper lines, reflecting their higher concentrations of engineers,
+    scientists, and acquisition professionals. These are roles where deep technical
+    expertise is rewarded over time, and employees regularly advance into well-compensated
+    senior grades the longer they stay.
+    <br><br>
+    The <strong>Department of the Army</strong> shows a comparatively flatter line,
+    consistent with a broader mix of job types. The Army civilian workforce includes
+    large numbers of administrative, logistics, and installation support roles alongside
+    its technical staff, and those support roles tend to have lower salary ceilings,
+    which pulls the overall average growth rate down.
+    <br><br>
+    The fact that these lines diverge, rather than running parallel, is an important
+    finding. It tells us that <strong>seniority does not pay off equally across all
+    agencies</strong>, which is exactly why the model includes both years of service and
+    agency as separate inputs. A future refinement would be to let the model estimate a
+    separate seniority slope for each agency individually, rather than applying one
+    average rate across all of them.</p></div>
+  </div>
+')
+```
+
+Row {data-height=500}
+-------------------------------------
+
+### Predicted vs. Actual by Agency {data-width=700}
+```{r fig.height=4.2, fig.width=8}
+plot_df %>%
+  group_by(AGY) %>%
+  slice_sample(n = 300, replace = TRUE) %>%
+  ungroup() %>%
+  select(AGY, SALARY, pred) %>%
+  pivot_longer(c(SALARY, pred), names_to = "Type", values_to = "Salary") %>%
+  mutate(Type = recode(Type, SALARY = "Actual", pred = "Predicted")) %>%
+  ggplot(aes(x = AGY, y = Salary, fill = Type)) +
+  geom_violin(alpha = 0.6, position = position_dodge(.9), linewidth = .3) +
+  scale_fill_manual(values = c(Actual = "#58a6ff99", Predicted = "#3fb95099")) +
+  labs(title    = "Predicted vs. Actual Salary by Agency",
+       subtitle = "Blue = Actual  |  Green = Predicted  |  300 obs/agency sample",
+       x = "Agency", y = "Salary (thousands of dollars)", fill = NULL) +
+  dark_theme
+```
+
+### Salary by Education Level {data-width=500}
+```{r fig.height=4.2, fig.width=6}
+model_df %>%
+  group_by(EDLVL) %>%
+  summarise(avg_salary = mean(SALARY, na.rm = TRUE), n = n(), .groups = "drop") %>%
+  arrange(EDLVL) %>%
+  ggplot(aes(x = factor(EDLVL), y = avg_salary)) +
+  geom_col(fill = "#d2a8ff55", color = "#d2a8ff", linewidth = .6) +
+  geom_line(aes(group = 1), color = "#d2a8ff", linewidth = 1.1) +
+  geom_point(color = "#d2a8ff", size = 3) +
+  labs(title    = "Average Salary by Education Level",
+       subtitle = "Higher codes = more advanced qualifications",
+       x = "EDLVL Code", y = "Average Salary (thousands of dollars)") +
+  dark_theme
+```
+
+Row {data-height=500}
+-------------------------------------
+
+### Predicted vs. Actual — Interpretation {data-width=700}
+```{r}
+htmltools::HTML('
+  <div class="interp-card" style="font-size:1.2rem; line-height:1.9; padding:1.2rem;">
+    <div class="interp-icon" style="font-size:1.8rem;"></div>
+    <div><p>Each agency has two violin shapes side by side: the <strong>blue one shows the
+    actual salaries</strong> employees received, and the <strong>green one shows what the
+    model predicted</strong> they would earn. If the model were perfect, the two shapes
+    would be identical. Where they differ, the model is missing something.
+    <br><br>
+    The most common pattern here is that the <strong>green predicted violin is more compressed
+    than the blue actual one</strong>, particularly at the top. This means the model tends
+    to pull very high salaries back toward the middle, underestimating what the
+    highest-paid employees actually earn. This is a known tendency of this type of
+    statistical model, which is mathematically designed to minimise average error rather
+    than chase extreme values.
+    <br><br>
+    This gap is most visible for the <strong>Department of the Navy</strong> and the
+    <strong>Department of the Air Force</strong>, where a subset of highly specialised
+    civilian staff earn salaries well above what the model expects based on their
+    classification alone. The model sees their job grade and years of service and predicts
+    a reasonable salary, but misses the additional premium those roles command.
+    <br><br>
+    For <strong>Department of Defense Other</strong>, the two violins sit closer together,
+    suggesting the workforce in that grouping is more uniform and the model\'s inputs do a
+    better job capturing what drives pay there.</p></div>
+  </div>
+')
+```
+
+### Education Level — Interpretation {data-width=500}
+```{r}
+htmltools::HTML('
+  <div class="interp-card" style="font-size:1.2rem; line-height:1.9; padding:1.2rem;">
+    <div class="interp-icon" style="font-size:1.8rem;"></div>
+    <div><p>This chart shows average salary at each education level, from least to most
+    advanced qualifications. The bars and line both rise consistently from left to right,
+    confirming that <strong>higher education is associated with higher pay</strong> across
+    all DoD components, which is what we would expect.
+    <br><br>
+    What is more interesting is that the <strong>line gets steeper toward the right</strong>.
+    This means the salary boost from getting more education is not the same at every level.
+    Going from a high school diploma to some college adds a modest amount. But going from
+    a bachelor\'s degree to a master\'s or doctoral degree adds considerably more. In other
+    words, the returns to education accelerate at the top end rather than increasing at a
+    steady rate all the way through.
+    <br><br>
+    This pattern is especially relevant for the <strong>Department of the Air Force</strong>
+    and the <strong>Department of the Navy</strong>, whose civilian workforces include large
+    numbers of engineers, scientists, and acquisition professionals who hold advanced degrees
+    and are placed into senior roles that carry significantly higher pay.
+    <br><br>
+    The current model treats each step up in education as adding the same fixed dollar
+    amount to predicted salary. A future improvement would be to let the model recognise
+    that the top education levels are worth disproportionately more, which would likely
+    improve prediction accuracy for the most highly qualified employees.</p></div>
+  </div>
+')
+```
+
+
+<!-- ############################################################
+     PAGE 4 — CONTRACT SPEND  (rows layout)
+     ############################################################ -->
+
+Column {data-width=1000}
+-------------------------------------
+
+Contract Spend {data-orientation=rows}
+=====================================
+
+Row {data-height=90}
+-------------------------------------
+
+### {data-width=1200}
+```{r}
+htmltools::HTML('
+  <div class="page-intro" style="font-size:1.3rem; line-height:1.8;">
+    <strong>Contract Spend</strong> — Monthly federal contract obligations by agency,
+    compared against salary overhead and CPI-U inflation rate on an annual basis.
+    Use the sidebar to isolate a specific component.
+  </div>
+')
+```
+
+Row
+-------------------------------------
+
+### {data-width=1200}
+```{r contract-spend-widget, fig.show='hide'}
+library(base64enc)
+
+plot_to_base64 <- function(p, width = 11, height = 4.6) {
+  tmp <- file.path(tempdir(), paste0("plot_", as.integer(Sys.time()), sample(1000:9999, 1), ".png"))
+  ggsave(tmp, plot = p, width = width, height = height, dpi = 150, bg = "#161b22")
+  uri <- base64enc::dataURI(file = tmp, mime = "image/png")
+  file.remove(tmp)
+  uri
+}
+
+# ── Agency lookup ─────────────────────────────────────────────────────────────
+agency_lookup <- tribble(
+  ~awarding_sub_agency_code, ~AGY,
+  "2100","AR","1700","NV","5700","AF",
+  "9748","DD","9761","DD","9763","DD","9771","DD","9776","DD",
+  "97AD","DD","97AE","DD","97AK","DD","97AS","DD","97AT","DD",
+  "97AV","DD","97AZ","DD","97BZ","DD","97CY","DD","97DH","DD",
+  "97EX","DD","97F1","DD","97F2","DD","97F5","DD","97F7","DD",
+  "97HW","DD","97JC","DD","97ZS","DD"
+)
+
+agency_labels <- c(
+  "AR" = "Department of the Army",
+  "NV" = "Department of the Navy",
+  "AF" = "Department of the Air Force",
+  "DD" = "Department of Defense (Other)"
+)
+
+contracts_path <- "./data/clean"
+
+df_contracts <- list.files(
+  path       = contracts_path,
+  pattern    = "fy\\d{4}_4col\\.rds$",
+  full.names = TRUE
+) %>%
+  map(readRDS) %>%
+  bind_rows()
+
+contracts_summary <- df_contracts %>%
+  mutate(month = floor_date(action_date, "month")) %>%
+  left_join(agency_lookup, by = "awarding_sub_agency_code") %>%
+  filter(!is.na(AGY)) %>%
+  group_by(AGY, month) %>%
+  summarise(total_contract = sum(federal_action_obligation, na.rm = TRUE), .groups = "drop")
+
+salary_summary <- combined %>%
+  mutate(month = as.Date(paste0(DATECODE, "01"), format = "%Y%m%d")) %>%
+  group_by(AGY, month) %>%
+  summarise(monthly_salary = sum(SALARY, na.rm = TRUE), .groups = "drop")
+
+inflation <- tribble(
+  ~year, ~inflation_rate,
+  2015,0.1,2016,2.1,2017,2.1,2018,2.4,2019,1.8,
+  2020,1.2,2021,4.7,2022,8.0,2023,4.1
+) %>%
+  mutate(month = as.Date(paste0(year, "-09-01")))
+
+contracts_all <- contracts_summary %>%
+  left_join(salary_summary, by = c("AGY", "month")) %>%
+  mutate(agency_label = agency_labels[AGY])
+
+avg_all_agencies <- contracts_summary %>%
+  mutate(year = year(month)) %>%
+  filter(year >= 2015) %>%
+  group_by(AGY, year) %>%
+  summarise(avg_contract = mean(total_contract, na.rm = TRUE), .groups = "drop") %>%
+  left_join(
+    salary_summary %>% mutate(year = year(month)) %>% select(AGY, year, monthly_salary),
+    by = c("AGY", "year")
+  ) %>%
+  left_join(inflation %>% select(year, inflation_rate), by = "year") %>%
+  mutate(month = as.Date(paste0(year, "-09-01")), agency_label = agency_labels[AGY]) %>%
+  group_by(AGY) %>%
+  arrange(year, .by_group = TRUE) %>%
+  mutate(
+    # scale_factor2: maps salary onto contract axis for dual-axis plots
+    scale_factor2          = max(avg_contract, na.rm = TRUE) / max(monthly_salary, na.rm = TRUE),
+    # cumulative inflation index anchored to 2015 = 1.0
+    cum_inflation_index    = cumprod(1 + inflation_rate / 100),
+    cum_inflation_index    = cum_inflation_index / first(cum_inflation_index),
+    # what 2015 contract spend would be worth each year if it tracked CPI
+    inflation_adj_contract = first(avg_contract) * cum_inflation_index,
+    # what 2015 salary would be worth each year if it tracked CPI
+    inflation_adj_salary   = first(monthly_salary) * cum_inflation_index
+  ) %>%
+  ungroup()
+
+# ── Plot helpers ──────────────────────────────────────────────────────────────
+make_monthly_plot <- function(agy_code) {
+  contracts_all %>%
+    filter(AGY == agy_code) %>%
+    ggplot(aes(x = month)) +
+    geom_area(aes(y = total_contract, fill = "Contract spend"), alpha = 0.4) +
+    geom_line(aes(y = total_contract, color = "Contract spend"), linewidth = 0.9) +
+    geom_smooth(aes(y = total_contract, color = "Trend (loess)"),
+                method = "loess", span = 0.3, se = FALSE,
+                linewidth = 0.9, linetype = "dotted") +
+    scale_y_continuous(labels = label_dollar(scale_cut = cut_short_scale())) +
+    scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+    scale_color_manual(values = c("Contract spend" = "#58a6ff", "Trend (loess)" = "#3fb950")) +
+    scale_fill_manual(values  = c("Contract spend" = "#58a6ff")) +
+    guides(fill = "none") +
+    labs(title    = paste("Monthly Contract Spend -", agency_labels[agy_code]),
+         subtitle = "With loess trend  |  y-axis free",
+         x = NULL, y = NULL, color = NULL) +
+    dark_theme +
+    theme(legend.position = "top")
+}
+
+make_annual_plot <- function(agy_code) {
+  d  <- avg_all_agencies %>% filter(AGY == agy_code)
+  sf <- unique(d$scale_factor2)
+  ggplot(d, aes(x = month)) +
+    # Contract spend (solid blue)
+    geom_line(aes(y = avg_contract, color = "Avg contract spend"), linewidth = 0.9) +
+    geom_point(aes(y = avg_contract, color = "Avg contract spend"), size = 2.5) +
+    # Inflation-adjusted contract spend (lighter blue, dotdash)
+    geom_line(aes(y = inflation_adj_contract, color = "Inflation-adjusted spend"),
+              linewidth = 0.9, linetype = "dotdash") +
+    geom_point(aes(y = inflation_adj_contract, color = "Inflation-adjusted spend"), size = 2.5) +
+    # Salary overhead (solid red, right axis)
+    geom_line(aes(y = monthly_salary * sf, color = "Salary overhead"), linewidth = 0.9) +
+    geom_point(aes(y = monthly_salary * sf, color = "Salary overhead"), size = 2.5) +
+    # Inflation-adjusted salary (maroon dashed, right axis)
+    geom_line(aes(y = inflation_adj_salary * sf, color = "Inflation-adjusted salary"),
+              linewidth = 0.9, linetype = "dashed") +
+    geom_point(aes(y = inflation_adj_salary * sf, color = "Inflation-adjusted salary"), size = 2.5) +
+    scale_y_continuous(
+      labels = label_dollar(scale_cut = cut_short_scale()),
+      sec.axis = sec_axis(
+        transform = ~ . / sf,
+        labels    = label_dollar(scale_cut = cut_short_scale()),
+        name      = "Salary overhead ($)"
+      )
+    ) +
+    scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+    scale_color_manual(values = c(
+      "Avg contract spend"        = "#58a6ff",
+      "Inflation-adjusted spend"  = "#79c0ff",
+      "Salary overhead"           = "#f78166",
+      "Inflation-adjusted salary" = "#8b2020"
+    )) +
+    guides(fill = "none") +
+    labs(title    = paste("Annual Spend vs Salary vs Inflation-Adjusted -", agency_labels[agy_code]),
+         subtitle = "Solid = actual  |  Dotdash = inflation-adjusted spend  |  Dashed = inflation-adjusted salary (right axis)",
+         x = NULL, y = "Contract spend ($)", color = NULL) +
+    dark_theme +
+    theme(
+      legend.position    = "top",
+      axis.title.y.right = element_text(color = "#f78166"),
+      axis.text.y.right  = element_text(color = "#f78166"),
+      axis.title.y.left  = element_text(color = "#8b949e")
+    )
+}
+
+# ── All-agencies faceted plots ─────────────────────────────────────────────────
+p_monthly_all <- ggplot(contracts_all, aes(x = month)) +
+  geom_area(aes(y = total_contract, fill = "Contract spend"), alpha = 0.4) +
+  geom_line(aes(y = total_contract, color = "Contract spend"), linewidth = 0.9) +
+  geom_smooth(aes(y = total_contract, color = "Trend (loess)"),
+              method = "loess", span = 0.3, se = FALSE, linewidth = 0.9, linetype = "dotted") +
+  facet_wrap(~ agency_label, scales = "free_y", ncol = 2) +
+  scale_y_continuous(labels = label_dollar(scale_cut = cut_short_scale())) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  scale_color_manual(values = c("Contract spend" = "#58a6ff", "Trend (loess)" = "#3fb950")) +
+  scale_fill_manual(values = c("Contract spend" = "#58a6ff")) +
+  guides(fill = "none") +
+  labs(title = "Monthly Contract Spend by Agency",
+       subtitle = "With loess trend  |  y-axis free per agency",
+       x = NULL, y = NULL, color = NULL) +
+  dark_theme +
+  theme(legend.position = "top",
+        strip.text = element_text(color = "#e6edf3", size = 11, face = "bold"),
+        panel.spacing = unit(1.5, "lines"))
+
+p_annual_all <- avg_all_agencies %>%
+  ggplot(aes(x = month)) +
+  geom_line(aes(y = avg_contract, color = "Avg contract spend"), linewidth = 0.9) +
+  geom_point(aes(y = avg_contract, color = "Avg contract spend"), size = 2.5) +
+  geom_line(aes(y = inflation_adj_contract, color = "Inflation-adjusted spend"),
+            linewidth = 0.9, linetype = "dotdash") +
+  geom_point(aes(y = inflation_adj_contract, color = "Inflation-adjusted spend"), size = 2.5) +
+  geom_line(aes(y = monthly_salary * scale_factor2, color = "Salary overhead"),
+            linewidth = 0.9) +
+  geom_point(aes(y = monthly_salary * scale_factor2, color = "Salary overhead"), size = 2.5) +
+  geom_line(aes(y = inflation_adj_salary * scale_factor2, color = "Inflation-adjusted salary"),
+            linewidth = 0.9, linetype = "dashed") +
+  geom_point(aes(y = inflation_adj_salary * scale_factor2, color = "Inflation-adjusted salary"), size = 2.5) +
+  facet_wrap(~ agency_label, scales = "free_y", ncol = 2) +
+  scale_y_continuous(labels = label_dollar(scale_cut = cut_short_scale())) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  scale_color_manual(values = c(
+    "Avg contract spend"        = "#58a6ff",
+    "Inflation-adjusted spend"  = "#79c0ff",
+    "Salary overhead"           = "#f78166",
+    "Inflation-adjusted salary" = "#8b2020"
+  )) +
+  guides(fill = "none") +
+  labs(title    = "Avg Annual Contract Spend vs Salary Overhead vs Inflation-Adjusted",
+       subtitle = "Solid = actual  |  Dotdash = inflation-adjusted spend  |  Dashed = inflation-adjusted salary (rescaled)",
+       x = NULL, y = NULL, color = NULL) +
+  dark_theme +
+  theme(
+    legend.position = "top",
+    strip.text      = element_text(color = "#e6edf3", size = 11, face = "bold"),
+    panel.spacing   = unit(1.5, "lines")
+  )
+
+# ── Render all plots to base64 ────────────────────────────────────────────────
+imgs <- list(
+  monthly_all = plot_to_base64(p_monthly_all),
+  annual_all  = plot_to_base64(p_annual_all),
+  monthly_AR  = plot_to_base64(make_monthly_plot("AR")),
+  annual_AR   = plot_to_base64(make_annual_plot("AR")),
+  monthly_NV  = plot_to_base64(make_monthly_plot("NV")),
+  annual_NV   = plot_to_base64(make_annual_plot("NV")),
+  monthly_AF  = plot_to_base64(make_monthly_plot("AF")),
+  annual_AF   = plot_to_base64(make_annual_plot("AF")),
+  monthly_DD  = plot_to_base64(make_monthly_plot("DD")),
+  annual_DD   = plot_to_base64(make_annual_plot("DD"))
+)
+
+interp_monthly <- list(
+  all = 'Each panel shows how much money one DoD component obligated on contracts each month
+         from 2015 to 2023. Obligating means the government has formally committed to paying
+         a contractor for goods or services. The <strong>dotted green line</strong> attempts
+         to show the overall direction of spending over time, though it is difficult to read
+         given how closely it follows the blue line.
+         <br><br>
+         A pattern visible across all four panels is a <strong>spike roughly every year</strong>,
+         most prominently in September. This happens because the federal fiscal year ends on
+         September 30th, and agencies commit any remaining budget before it expires.
+         <br><br>
+         The <strong>Department of the Army</strong> and <strong>Department of the Navy</strong>
+         both show the largest dollar spikes, reaching over $20 billion in individual months
+         in the later years of the period. The <strong>Department of the Air Force</strong>
+         and <strong>Department of Defense Other</strong> run at a lower overall level,
+         generally peaking around $10 billion. All four components show a gradual upward
+         drift in spending over the full period, with the most notable acceleration visible
+         after 2022.',
+
+  AR  = 'The Department of the Army shows a consistent monthly spending pattern with large
+         spikes appearing roughly once a year, typically in September as the fiscal year
+         closes and remaining funds must be committed before they expire. These end-of-year
+         obligations often cover installation operations, base maintenance, and logistics
+         support contracts. What stands out most in the Army panel is a dramatic spike
+         approaching $25 billion around 2023, which is noticeably larger than anything
+         seen earlier in the series and suggests a significant one-time or accelerated
+         procurement event in that period.',
+
+  NV  = 'The Department of the Navy shows large, irregular spikes throughout the period,
+         consistent with how shipbuilding contracts work. When the Navy signs a contract
+         to build or overhaul a vessel, the full obligated dollar amount is recorded in
+         that one month rather than spread across the life of the project, which creates
+         the sharp vertical jumps visible in the chart. The Navy reaches some of the
+         highest single-month values in the dataset, with spikes approaching $20 billion
+         or more in the later years. Unlike the Army, there is no single dominant spike
+         but rather a series of large awards distributed across the period.',
+
+  AF  = 'The Department of the Air Force shows a more irregular spending pattern compared
+         to the Army, with spikes appearing throughout the year rather than clustering
+         heavily in September. This reflects how aircraft procurement and depot maintenance
+         contracts are awarded in concentrated bursts tied to programme milestones rather
+         than at a steady pace. The overall spending level sits lower than the Army and
+         Navy, generally ranging between $4 billion and $10 billion per month, with a
+         visible upward step in the most recent years of the series.',
+
+  DD  = 'Department of Defense Other groups together a wide range of organisations that
+         do not fall under the Army, Navy, or Air Force, including agencies such as the
+         <strong>Defense Information Systems Agency (DISA)</strong>, the
+         <strong>Defense Logistics Agency (DLA)</strong>, and the
+         <strong>Missile Defense Agency (MDA)</strong>. The spending profile runs at a
+         similar level to the Air Force, generally between $4 billion and $10 billion
+         per month. Because this panel aggregates many different agencies and contract
+         types, no single large award dominates the picture, producing a more even
+         pattern than the individual service branches.'
+)
+
+interp_annual <- list(
+  all = 'This chart shows four lines per panel. <strong>Blue (solid)</strong> is actual
+         average contract spend. <strong>Light blue (dot-dash)</strong> is what that contract
+         spend would have been if it grew exactly with inflation each year, so when the two
+         blue lines are close together, contract spending grew roughly in line with prices.
+         <strong>Salmon/orange (solid)</strong> is actual salary overhead. <strong>Maroon
+         (dashed)</strong> is what salary would look like inflated by CPI, a ceiling showing
+         how much more salary costs could have grown.
+         <br><br>
+         The most consistent pattern across all four components is that
+         <strong>contract spend starts well below salary overhead and converges toward it
+         by 2022 and 2023</strong>. This means contracted services have been growing faster
+         than the civilian workforce cost, closing a gap that existed through most of the
+         period. The two blue lines staying close together across all components tells us
+         this growth was broadly in line with inflation rather than representing large real
+         increases in contracted activity. Use the sidebar to examine each component
+         individually.',
+
+  AR  = 'For the Department of the Army, <strong>contract spend (blue) starts around $5
+         billion and salary overhead (salmon) starts around $8 billion</strong> in 2015,
+         leaving a significant gap between the two. Over the period the two lines converge,
+         meeting around 2022 and 2023 as contract spending accelerated. The
+         <strong>inflation-adjusted spend (light blue)</strong> tracks very closely to
+         actual spend throughout, confirming that Army contract growth was largely
+         explained by rising prices rather than a major expansion of contracted activity.
+         The <strong>maroon inflation-adjusted salary line</strong> sits consistently
+         above actual salary, showing that salary costs grew more slowly than inflation
+         would have implied, which is consistent with federal pay scales that adjust
+         more slowly than private sector wages.',
+
+  NV  = 'The Department of the Navy shows a different picture from the Army.
+         <strong>Contract spend (blue) and salary overhead (salmon) start much closer
+         together in 2015</strong>, both in the $8 to $9 billion range, and remain
+         intertwined throughout the period. This reflects how shipbuilding contracts
+         and civilian workforce costs scale together in the Navy. The
+         <strong>inflation-adjusted spend (light blue)</strong> runs just above actual
+         spend, meaning Navy contract growth tracked inflation closely without major
+         real-terms expansion. The <strong>maroon salary line</strong> sits above actual
+         salary for most years, suggesting Navy civilian pay grew more slowly than
+         general price increases, consistent with GS pay scale adjustments lagging
+         broader inflation.',
+
+  AF  = 'For the Department of the Air Force, <strong>contract spend (blue) begins
+         below salary overhead (salmon) and the two lines converge by the end of the
+         period</strong>, following the same pattern seen in the Army. The
+         <strong>inflation-adjusted spend (light blue)</strong> is nearly indistinguishable
+         from actual spend across the full period, which is notable, it means Air Force
+         contract growth was almost entirely explained by inflation rather than any
+         real increase in the volume or scope of contracted work. The
+         <strong>maroon inflation-adjusted salary line</strong> pulls away from actual
+         salary most visibly in 2021 and 2022, the years of peak inflation, highlighting
+         that Air Force civilian pay did not keep pace with the cost of living during
+         that period.',
+
+  DD  = 'Department of Defense Other shows the most stable relationship between the
+         four lines. <strong>Salary overhead (salmon) sits above contract spend (blue)
+         for the entire period</strong>, and unlike the other components the two lines
+         do not fully converge by 2023, meaning this grouping remained more
+         personnel-cost-dominated throughout. The <strong>inflation-adjusted spend
+         (light blue)</strong> is again very close to actual spend, confirming that
+         the modest growth in contracted services for these agencies was primarily
+         driven by price increases rather than expanded scope. The
+         <strong>maroon salary line</strong> diverges most sharply in 2022, reflecting
+         how the inflation surge that year created a growing gap between what employees
+         were actually paid and what full CPI adjustment would have required.'
+)
+
+# ── Build widget ──────────────────────────────────────────────────────────────
+make_section <- function(key) {
+  sprintf('
+    <div class="cs-section" data-key="%s" style="display:none;">
+      <img src="%s" style="width:100%%; border-radius:6px; margin-bottom:0.8rem;">
+      <div class="interp-card" style="font-size:1.15rem; line-height:1.85; padding:1.2rem; margin-bottom:1.5rem;">
+        <div class="interp-icon" style="font-size:1.6rem;"></div>
+        <div><p>%s</p></div>
+      </div>
+      <img src="%s" style="width:100%%; border-radius:6px; margin-bottom:0.8rem;">
+      <div class="interp-card" style="font-size:1.15rem; line-height:1.85; padding:1.2rem; margin-bottom:1rem;">
+        <div class="interp-icon" style="font-size:1.6rem;"></div>
+        <div><p>%s</p></div>
+      </div>
+    </div>',
+    key,
+    imgs[[paste0("monthly_", key)]],
+    interp_monthly[[key]],
+    imgs[[paste0("annual_",  key)]],
+    interp_annual[[key]]
+  )
+}
+
+a_on  <- "background:#1c2b3a; color:#e6edf3; border:1px solid #58a6ff; padding:0.7rem 1rem; border-radius:6px; font-size:1rem; cursor:pointer; text-align:left; width:100%; margin-bottom:0.5rem;"
+a_off <- "background:#161b22; color:#e6edf3; border:1px solid #30363d; padding:0.7rem 1rem; border-radius:6px; font-size:1rem; cursor:pointer; text-align:left; width:100%; margin-bottom:0.5rem;"
+
+htmltools::HTML(sprintf('
+<div style="display:flex; height:100%%; gap:0;">
+
+  <div style="width:220px; min-width:220px; padding:1rem; border-right:1px solid #30363d;">
+    <div style="font-size:1.05rem; font-weight:bold; color:#e6edf3; margin-bottom:0.4rem;">Select Agency</div>
+    <div style="font-size:0.9rem; color:#8b949e; margin-bottom:1rem;">Click to filter both charts.</div>
+    <button id="cs-btn-all" onclick="csSelect(\'all\')" style="%s">All Agencies</button>
+    <button id="cs-btn-AR"  onclick="csSelect(\'AR\')"  style="%s">Department of the Army</button>
+    <button id="cs-btn-NV"  onclick="csSelect(\'NV\')"  style="%s">Department of the Navy</button>
+    <button id="cs-btn-AF"  onclick="csSelect(\'AF\')"  style="%s">Department of the Air Force</button>
+    <button id="cs-btn-DD"  onclick="csSelect(\'DD\')"  style="%s">DoD (Other)</button>
+  </div>
+
+  <div id="cs-content" style="flex:1; overflow-y:auto; padding:1.2rem;">
+    %s%s%s%s%s
+  </div>
+
+</div>
+
+<script>
+function csSelect(key) {
+  var keys = ["all","AR","NV","AF","DD"];
+  var on  = "%s";
+  var off = "%s";
+  keys.forEach(function(k) {
+    document.getElementById("cs-btn-" + k).setAttribute("style", off);
+    var s = document.querySelector(".cs-section[data-key=\'" + k + "\']");
+    if (s) s.style.display = "none";
+  });
+  document.getElementById("cs-btn-" + key).setAttribute("style", on);
+  var show = document.querySelector(".cs-section[data-key=\'" + key + "\']");
+  if (show) show.style.display = "block";
+}
+csSelect("all");
+</script>
+',
+  a_on, a_off, a_off, a_off, a_off,
+  make_section("all"),
+  make_section("AR"),
+  make_section("NV"),
+  make_section("AF"),
+  make_section("DD"),
+  a_on, a_off
+))
+```
+ 
